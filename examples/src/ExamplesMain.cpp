@@ -46,6 +46,9 @@ GrooveApp g_grooveExample;
 // Windows users will need to set a valid working directory for the LabSoundExamples project, for instance $(ProjectDir)../../assets
 int main (int argc, char *argv[])
 {
+#if defined(__WINDOWS_DS__) || defined(__WINDOWS_ASIO__) || defined(__WINDOWS_WASAPI__)
+	SetCurrentDirectoryW(L"D:\\src\\LabSound\\assets");
+#endif
     g_simpleExample.PlayExample();
     return 0;
 }
