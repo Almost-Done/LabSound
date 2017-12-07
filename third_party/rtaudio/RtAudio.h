@@ -994,6 +994,7 @@ public:
 #if defined(__WINDOWS_WASAPI__)
 
 struct IMMDeviceEnumerator;
+struct IAudioClient;
 
 class RtApiWasapi : public RtApi
 {
@@ -1004,6 +1005,9 @@ public:
   RtAudio::Api getCurrentApi( void ) { return RtAudio::WINDOWS_WASAPI; }
   unsigned int getDeviceCount( void );
   RtAudio::DeviceInfo getDeviceInfo( unsigned int device );
+#ifdef USE_WINRT
+  IAudioClient* createAudioClient(unsigned int device, bool& isCaptureDevice, RtAudio::DeviceInfo* rtDeviceInfo = nullptr);
+#endif
   unsigned int getDefaultOutputDevice( void );
   unsigned int getDefaultInputDevice( void );
   void closeStream( void );

@@ -3911,20 +3911,22 @@ struct WasapiHandle
 RtApiWasapi::RtApiWasapi()
   : coInitialized_( false ), deviceEnumerator_( NULL )
 {
-  // WASAPI can run either apartment or multi-threaded
-  HRESULT hr = CoInitialize( NULL );
-  if ( !FAILED( hr ) )
-    coInitialized_ = true;
+	// WASAPI can run either apartment or multi-threaded
+	HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+	if (!FAILED(hr))
+		coInitialized_ = true;
 
+#ifndef USE_WINRT
   // Instantiate device enumerator
-  hr = CoCreateInstance( __uuidof( MMDeviceEnumerator ), NULL,
-                         CLSCTX_ALL, __uuidof( IMMDeviceEnumerator ),
-                         ( void** ) &deviceEnumerator_ );
+  hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL,
+	  CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
+	  (void**)&deviceEnumerator_);
 
-  if ( FAILED( hr ) ) {
-    errorText_ = "RtApiWasapi::RtApiWasapi: Unable to instantiate device enumerator";
-    error( RtAudioError::DRIVER_ERROR );
+  if (FAILED(hr)) {
+	  errorText_ = "RtApiWasapi::RtApiWasapi: Unable to instantiate device enumerator";
+	  error(RtAudioError::DRIVER_ERROR);
   }
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -3945,6 +3947,21 @@ RtApiWasapi::~RtApiWasapi()
 
 unsigned int RtApiWasapi::getDeviceCount( void )
 {
+#ifdef USE_WINRT
+	auto renderSelector = Windows::Media::Devices::MediaDevice::GetAudioRenderSelector();
+	auto captureSelector = Windows::Media::Devices::MediaDevice::GetAudioCaptureSelector();
+
+	auto renderAsyncOp = Windows::Devices::Enumeration::DeviceInformation::FindAllAsync(renderSelector);
+	auto captureAsyncOp = Windows::Devices::Enumeration::DeviceInformation::FindAllAsync(captureSelector);
+
+	// Sub-par asynchronous running of the above Async call
+	while (renderAsyncOp->Status == Windows::Foundation::AsyncStatus::Started
+		|| captureAsyncOp->Status == Windows::Foundation::AsyncStatus::Started) {
+		Sleep(15);
+	}
+
+	return renderAsyncOp->GetResults()->Size + captureAsyncOp->GetResults()->Size;
+#else
   unsigned int captureDeviceCount = 0;
   unsigned int renderDeviceCount = 0;
 
@@ -3988,234 +4005,438 @@ Exit:
 
   error( RtAudioError::DRIVER_ERROR );
   return 0;
+#endif
 }
 
 //-----------------------------------------------------------------------------
 
-RtAudio::DeviceInfo RtApiWasapi::getDeviceInfo( unsigned int device )
+#ifdef USE_WINRT
+#include <windows.foundation.h>
+#include <wrl\wrappers\corewrappers.h>
+#include <wrl\client.h>
+#include <wrl\implements.h>
+
+using namespace Microsoft::WRL;
+
+class ISACRenderer :
+	public Microsoft::WRL::RuntimeClass< Microsoft::WRL::RuntimeClassFlags< Microsoft::WRL::ClassicCom >, Microsoft::WRL::FtmBase, IActivateAudioInterfaceCompletionHandler >
 {
-  RtAudio::DeviceInfo info;
-  unsigned int captureDeviceCount = 0;
-  unsigned int renderDeviceCount = 0;
-  std::string defaultDeviceName;
-  bool isCaptureDevice = false;
+public:
 
-  PROPVARIANT deviceNameProp;
-  PROPVARIANT defaultDeviceNameProp;
+	ISACRenderer()
+	{
 
-  IMMDeviceCollection* captureDevices = NULL;
-  IMMDeviceCollection* renderDevices = NULL;
-  IMMDevice* devicePtr = NULL;
-  IMMDevice* defaultDevicePtr = NULL;
-  IAudioClient* audioClient = NULL;
-  IPropertyStore* devicePropStore = NULL;
-  IPropertyStore* defaultDevicePropStore = NULL;
+	}
 
-  WAVEFORMATEX* deviceFormat = NULL;
-  WAVEFORMATEX* closestMatchFormat = NULL;
+	STDMETHOD(ActivateCompleted)(IActivateAudioInterfaceAsyncOperation *operation)
+	{
+		m_complete = true;
+		return S_OK;
+	}
 
-  // probed
-  info.probed = false;
+	bool m_complete = false;
+	
+private:
+	~ISACRenderer()
+	{
 
-  // Count capture devices
-  errorText_.clear();
-  RtAudioError::Type errorType = RtAudioError::DRIVER_ERROR;
-  HRESULT hr = deviceEnumerator_->EnumAudioEndpoints( eCapture, DEVICE_STATE_ACTIVE, &captureDevices );
-  if ( FAILED( hr ) ) {
-    errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve capture device collection.";
-    goto Exit;
-  }
+	}
 
-  hr = captureDevices->GetCount( &captureDeviceCount );
-  if ( FAILED( hr ) ) {
-    errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve capture device count.";
-    goto Exit;
-  }
+private:
+};
 
-  // Count render devices
-  hr = deviceEnumerator_->EnumAudioEndpoints( eRender, DEVICE_STATE_ACTIVE, &renderDevices );
-  if ( FAILED( hr ) ) {
-    errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve render device collection.";
-    goto Exit;
-  }
+IAudioClient* RtApiWasapi::createAudioClient(unsigned int device, bool& isCaptureDevice, RtAudio::DeviceInfo* rtDeviceInfo)
+{
+	errorText_.clear();
+	RtAudioError::Type errorType = RtAudioError::DRIVER_ERROR;
 
-  hr = renderDevices->GetCount( &renderDeviceCount );
-  if ( FAILED( hr ) ) {
-    errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve render device count.";
-    goto Exit;
-  }
+	auto renderSelector = Windows::Media::Devices::MediaDevice::GetAudioRenderSelector();
+	auto captureSelector = Windows::Media::Devices::MediaDevice::GetAudioCaptureSelector();
 
-  // validate device index
-  if ( device >= captureDeviceCount + renderDeviceCount ) {
-    errorText_ = "RtApiWasapi::getDeviceInfo: Invalid device index.";
-    errorType = RtAudioError::INVALID_USE;
-    goto Exit;
-  }
+	auto renderAsyncOp = Windows::Devices::Enumeration::DeviceInformation::FindAllAsync(renderSelector);
+	auto captureAsyncOp = Windows::Devices::Enumeration::DeviceInformation::FindAllAsync(captureSelector);
 
-  // determine whether index falls within capture or render devices
-  if ( device >= renderDeviceCount ) {
-    hr = captureDevices->Item( device - renderDeviceCount, &devicePtr );
-    if ( FAILED( hr ) ) {
-      errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve capture device handle.";
-      goto Exit;
-    }
-    isCaptureDevice = true;
-  }
-  else {
-    hr = renderDevices->Item( device, &devicePtr );
-    if ( FAILED( hr ) ) {
-      errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve render device handle.";
-      goto Exit;
-    }
-    isCaptureDevice = false;
-  }
+	// Sub-par asynchronous running of the above Async call
+	while (renderAsyncOp->Status == Windows::Foundation::AsyncStatus::Started
+		|| captureAsyncOp->Status == Windows::Foundation::AsyncStatus::Started) {
+		Sleep(15);
+	}
 
-  // get default device name
-  if ( isCaptureDevice ) {
-    hr = deviceEnumerator_->GetDefaultAudioEndpoint( eCapture, eConsole, &defaultDevicePtr );
-    if ( FAILED( hr ) ) {
-      errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve default capture device handle.";
-      goto Exit;
-    }
-  }
-  else {
-    hr = deviceEnumerator_->GetDefaultAudioEndpoint( eRender, eConsole, &defaultDevicePtr );
-    if ( FAILED( hr ) ) {
-      errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve default render device handle.";
-      goto Exit;
-    }
-  }
+	auto renderDeviceCount = renderAsyncOp->GetResults()->Size;
+	auto captureDeviceCount = captureAsyncOp->GetResults()->Size;
 
-  hr = defaultDevicePtr->OpenPropertyStore( STGM_READ, &defaultDevicePropStore );
-  if ( FAILED( hr ) ) {
-    errorText_ = "RtApiWasapi::getDeviceInfo: Unable to open default device property store.";
-    goto Exit;
-  }
-  PropVariantInit( &defaultDeviceNameProp );
+	// validate device index
+	if (device >= captureDeviceCount + renderDeviceCount) {
+		errorText_ = "RtApiWasapi::getDeviceInfo: Invalid device index.";
+		errorType = RtAudioError::INVALID_USE;
+		return nullptr;
+	}
 
-  hr = defaultDevicePropStore->GetValue( PKEY_Device_FriendlyName, &defaultDeviceNameProp );
-  if ( FAILED( hr ) ) {
-    errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve default device property: PKEY_Device_FriendlyName.";
-    goto Exit;
-  }
+	Windows::Devices::Enumeration::DeviceInformation^ deviceInfo;
+	Platform::String^ defaultDeviceId;
+	// determine whether index falls within capture or render devices
+	if (device < renderDeviceCount) {
+		defaultDeviceId = Windows::Media::Devices::MediaDevice::GetDefaultAudioRenderId(Windows::Media::Devices::AudioDeviceRole::Default);
+		auto renderDevices = renderAsyncOp->GetResults();
+		deviceInfo = renderDevices->GetAt(device);
+		isCaptureDevice = false;
+	}
+	else {
+		defaultDeviceId = Windows::Media::Devices::MediaDevice::GetDefaultAudioCaptureId(Windows::Media::Devices::AudioDeviceRole::Default);
+		auto captureDevices = captureAsyncOp->GetResults();
+		deviceInfo = captureDevices->GetAt(device - renderDeviceCount);
+		isCaptureDevice = true;
+	}
 
-  defaultDeviceName = convertCharPointerToStdString(defaultDeviceNameProp.pwszVal);
+	
+	Microsoft::WRL::ComPtr<IActivateAudioInterfaceAsyncOperation> asyncOp;
+	Microsoft::WRL::ComPtr<ISACRenderer> completionInterface = Microsoft::WRL::Make<ISACRenderer>();
+	HRESULT hr = ActivateAudioInterfaceAsync(deviceInfo->Id->Data(), __uuidof(IAudioClient), NULL, completionInterface.Get(), &asyncOp);
+	while (!completionInterface->m_complete) {
+		Sleep(15);
+	}
 
-  // name
-  hr = devicePtr->OpenPropertyStore( STGM_READ, &devicePropStore );
-  if ( FAILED( hr ) ) {
-    errorText_ = "RtApiWasapi::getDeviceInfo: Unable to open device property store.";
-    goto Exit;
-  }
+	// Check for a successful activation result
+	ComPtr<IUnknown> punkAudioInterface = nullptr;
+	HRESULT hrActivation;
+	hr = asyncOp->GetActivateResult(&hrActivation, &punkAudioInterface);
+	if (FAILED(hr) || FAILED(hrActivation))
+	{
+		errorText_ = "RtApiWasapi::getDeviceInfo: Failed to activate IAudioClient.";
+		errorType = RtAudioError::INVALID_USE;
+		return nullptr;
+	}
 
-  PropVariantInit( &deviceNameProp );
+	IAudioClient* audioClient = NULL;
+	punkAudioInterface.Get()->QueryInterface(&audioClient);
 
-  hr = devicePropStore->GetValue( PKEY_Device_FriendlyName, &deviceNameProp );
-  if ( FAILED( hr ) ) {
-    errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve device property: PKEY_Device_FriendlyName.";
-    goto Exit;
-  }
+	if (rtDeviceInfo != nullptr)
+	{
+		rtDeviceInfo->name = convertCharPointerToStdString(deviceInfo->Name->Data());
+		if (isCaptureDevice) {
+			rtDeviceInfo->isDefaultInput = (Platform::String::CompareOrdinal(deviceInfo->Id, defaultDeviceId) == 0);
+			rtDeviceInfo->isDefaultOutput = false;
+		}
+		else {
+			rtDeviceInfo->isDefaultInput = false;
+			rtDeviceInfo->isDefaultOutput = (Platform::String::CompareOrdinal(deviceInfo->Id, defaultDeviceId) == 0);
+		}
+	}
 
-  info.name =convertCharPointerToStdString(deviceNameProp.pwszVal);
+	return audioClient;
+}
 
-  // is default
-  if ( isCaptureDevice ) {
-    info.isDefaultInput = info.name == defaultDeviceName;
-    info.isDefaultOutput = false;
-  }
-  else {
-    info.isDefaultInput = false;
-    info.isDefaultOutput = info.name == defaultDeviceName;
-  }
+RtAudio::DeviceInfo RtApiWasapi::getDeviceInfo(unsigned int device)
+{
+	RtAudio::DeviceInfo info;
+	IAudioClient* audioClient = NULL;
+	WAVEFORMATEX* deviceFormat = NULL;
+	RtAudioError::Type errorType = RtAudioError::DRIVER_ERROR;
 
-  // channel count
-  hr = devicePtr->Activate( __uuidof( IAudioClient ), CLSCTX_ALL, NULL, ( void** ) &audioClient );
-  if ( FAILED( hr ) ) {
-    errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve device audio client.";
-    goto Exit;
-  }
+	bool isCaptureDevice;
+	audioClient = createAudioClient(device, isCaptureDevice, &info);
+	if (audioClient == nullptr)
+	{
+		errorText_ = "RtApiWasapi::getDeviceInfo: Failed to activate IAudioClient.";
+		errorType = RtAudioError::INVALID_USE;
+		goto Exit;
+	}
 
-  hr = audioClient->GetMixFormat( &deviceFormat );
-  if ( FAILED( hr ) ) {
-    errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve device mix format.";
-    goto Exit;
-  }
+	HRESULT hr = audioClient->GetMixFormat(&deviceFormat);
+	if (FAILED(hr)) {
+		errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve device mix format.";
+		goto Exit;
+	}
 
-  if ( isCaptureDevice ) {
-    info.inputChannels = deviceFormat->nChannels;
-    info.outputChannels = 0;
-    info.duplexChannels = 0;
-  }
-  else {
-    info.inputChannels = 0;
-    info.outputChannels = deviceFormat->nChannels;
-    info.duplexChannels = 0;
-  }
+	if (isCaptureDevice) {
+		info.inputChannels = deviceFormat->nChannels;
+		info.outputChannels = 0;
+		info.duplexChannels = 0;
+	}
+	else {
+		info.inputChannels = 0;
+		info.outputChannels = deviceFormat->nChannels;
+		info.duplexChannels = 0;
+	}
 
-  // sample rates
-  info.sampleRates.clear();
+	// sample rates
+	info.sampleRates.clear();
 
-  // allow support for all sample rates as we have a built-in sample rate converter
-  for ( unsigned int i = 0; i < MAX_SAMPLE_RATES; i++ ) {
-    info.sampleRates.push_back( SAMPLE_RATES[i] );
-  }
-  info.preferredSampleRate = deviceFormat->nSamplesPerSec;
+	// allow support for all sample rates as we have a built-in sample rate converter
+	for (unsigned int i = 0; i < MAX_SAMPLE_RATES; i++) {
+		info.sampleRates.push_back(SAMPLE_RATES[i]);
+	}
+	info.preferredSampleRate = deviceFormat->nSamplesPerSec;
 
-  // native format
-  info.nativeFormats = 0;
+	// native format
+	info.nativeFormats = 0;
 
-  if ( deviceFormat->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
-       ( deviceFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
-         ( ( WAVEFORMATEXTENSIBLE* ) deviceFormat )->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT ) )
-  {
-    if ( deviceFormat->wBitsPerSample == 32 ) {
-      info.nativeFormats |= RTAUDIO_FLOAT32;
-    }
-    else if ( deviceFormat->wBitsPerSample == 64 ) {
-      info.nativeFormats |= RTAUDIO_FLOAT64;
-    }
-  }
-  else if ( deviceFormat->wFormatTag == WAVE_FORMAT_PCM ||
-           ( deviceFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
-             ( ( WAVEFORMATEXTENSIBLE* ) deviceFormat )->SubFormat == KSDATAFORMAT_SUBTYPE_PCM ) )
-  {
-    if ( deviceFormat->wBitsPerSample == 8 ) {
-      info.nativeFormats |= RTAUDIO_SINT8;
-    }
-    else if ( deviceFormat->wBitsPerSample == 16 ) {
-      info.nativeFormats |= RTAUDIO_SINT16;
-    }
-    else if ( deviceFormat->wBitsPerSample == 24 ) {
-      info.nativeFormats |= RTAUDIO_SINT24;
-    }
-    else if ( deviceFormat->wBitsPerSample == 32 ) {
-      info.nativeFormats |= RTAUDIO_SINT32;
-    }
-  }
+	if (deviceFormat->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
+		(deviceFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+		((WAVEFORMATEXTENSIBLE*)deviceFormat)->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT))
+	{
+		if (deviceFormat->wBitsPerSample == 32) {
+			info.nativeFormats |= RTAUDIO_FLOAT32;
+		}
+		else if (deviceFormat->wBitsPerSample == 64) {
+			info.nativeFormats |= RTAUDIO_FLOAT64;
+		}
+	}
+	else if (deviceFormat->wFormatTag == WAVE_FORMAT_PCM ||
+		(deviceFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+		((WAVEFORMATEXTENSIBLE*)deviceFormat)->SubFormat == KSDATAFORMAT_SUBTYPE_PCM))
+	{
+		if (deviceFormat->wBitsPerSample == 8) {
+			info.nativeFormats |= RTAUDIO_SINT8;
+		}
+		else if (deviceFormat->wBitsPerSample == 16) {
+			info.nativeFormats |= RTAUDIO_SINT16;
+		}
+		else if (deviceFormat->wBitsPerSample == 24) {
+			info.nativeFormats |= RTAUDIO_SINT24;
+		}
+		else if (deviceFormat->wBitsPerSample == 32) {
+			info.nativeFormats |= RTAUDIO_SINT32;
+		}
+	}
 
-  // probed
-  info.probed = true;
+	// probed
+	info.probed = true;
 
 Exit:
-  // release all references
-  PropVariantClear( &deviceNameProp );
-  PropVariantClear( &defaultDeviceNameProp );
 
-  SAFE_RELEASE( captureDevices );
-  SAFE_RELEASE( renderDevices );
-  SAFE_RELEASE( devicePtr );
-  SAFE_RELEASE( defaultDevicePtr );
-  SAFE_RELEASE( audioClient );
-  SAFE_RELEASE( devicePropStore );
-  SAFE_RELEASE( defaultDevicePropStore );
+	if (!errorText_.empty())
+		error(errorType);
 
-  CoTaskMemFree( deviceFormat );
-  CoTaskMemFree( closestMatchFormat );
-
-  if ( !errorText_.empty() )
-    error( errorType );
-  return info;
+	return info;
 }
+#else
+RtAudio::DeviceInfo RtApiWasapi::getDeviceInfo(unsigned int device)
+{
+	RtAudio::DeviceInfo info;
+	unsigned int captureDeviceCount = 0;
+	unsigned int renderDeviceCount = 0;
+	std::string defaultDeviceName;
+	bool isCaptureDevice = false;
+
+	PROPVARIANT deviceNameProp;
+	PROPVARIANT defaultDeviceNameProp;
+
+	IMMDeviceCollection* captureDevices = NULL;
+	IMMDeviceCollection* renderDevices = NULL;
+	IMMDevice* devicePtr = NULL;
+	IMMDevice* defaultDevicePtr = NULL;
+	IAudioClient* audioClient = NULL;
+	IPropertyStore* devicePropStore = NULL;
+	IPropertyStore* defaultDevicePropStore = NULL;
+
+	WAVEFORMATEX* deviceFormat = NULL;
+	WAVEFORMATEX* closestMatchFormat = NULL;
+
+	// probed
+	info.probed = false;
+
+	// Count capture devices
+	errorText_.clear();
+	RtAudioError::Type errorType = RtAudioError::DRIVER_ERROR;
+	HRESULT hr = deviceEnumerator_->EnumAudioEndpoints( eCapture, DEVICE_STATE_ACTIVE, &captureDevices );
+	if ( FAILED( hr ) ) {
+		errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve capture device collection.";
+		goto Exit;
+	}
+
+	hr = captureDevices->GetCount( &captureDeviceCount );
+	if ( FAILED( hr ) ) {
+		errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve capture device count.";
+		goto Exit;
+	}
+
+	// Count render devices
+	hr = deviceEnumerator_->EnumAudioEndpoints( eRender, DEVICE_STATE_ACTIVE, &renderDevices );
+	if ( FAILED( hr ) ) {
+		errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve render device collection.";
+		goto Exit;
+	}
+
+	hr = renderDevices->GetCount( &renderDeviceCount );
+	if ( FAILED( hr ) ) {
+		errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve render device count.";
+		goto Exit;
+	}
+
+	// validate device index
+	if ( device >= captureDeviceCount + renderDeviceCount ) {
+		errorText_ = "RtApiWasapi::getDeviceInfo: Invalid device index.";
+		errorType = RtAudioError::INVALID_USE;
+		goto Exit;
+	}
+
+	// determine whether index falls within capture or render devices
+	if ( device >= renderDeviceCount ) {
+		hr = captureDevices->Item( device - renderDeviceCount, &devicePtr );
+		if ( FAILED( hr ) ) {
+			errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve capture device handle.";
+			goto Exit;
+		}
+		isCaptureDevice = true;
+	}
+	else {
+		hr = renderDevices->Item( device, &devicePtr );
+		if ( FAILED( hr ) ) {
+			errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve render device handle.";
+			goto Exit;
+		}
+		isCaptureDevice = false;
+	}
+
+	// get default device name
+	if ( isCaptureDevice ) {
+		hr = deviceEnumerator_->GetDefaultAudioEndpoint( eCapture, eConsole, &defaultDevicePtr );
+		if ( FAILED( hr ) ) {
+			errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve default capture device handle.";
+			goto Exit;
+		}
+	}
+	else {
+		hr = deviceEnumerator_->GetDefaultAudioEndpoint( eRender, eConsole, &defaultDevicePtr );
+		if ( FAILED( hr ) ) {
+			errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve default render device handle.";
+			goto Exit;
+		}
+	}
+
+	hr = defaultDevicePtr->OpenPropertyStore( STGM_READ, &defaultDevicePropStore );
+	if ( FAILED( hr ) ) {
+		errorText_ = "RtApiWasapi::getDeviceInfo: Unable to open default device property store.";
+		goto Exit;
+	}
+	PropVariantInit( &defaultDeviceNameProp );
+
+	hr = defaultDevicePropStore->GetValue( PKEY_Device_FriendlyName, &defaultDeviceNameProp );
+	if ( FAILED( hr ) ) {
+		errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve default device property: PKEY_Device_FriendlyName.";
+		goto Exit;
+	}
+
+	defaultDeviceName = convertCharPointerToStdString(defaultDeviceNameProp.pwszVal);
+
+	// name
+	hr = devicePtr->OpenPropertyStore( STGM_READ, &devicePropStore );
+	if ( FAILED( hr ) ) {
+		errorText_ = "RtApiWasapi::getDeviceInfo: Unable to open device property store.";
+		goto Exit;
+	}
+
+	PropVariantInit( &deviceNameProp );
+
+	hr = devicePropStore->GetValue( PKEY_Device_FriendlyName, &deviceNameProp );
+	if ( FAILED( hr ) ) {
+		errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve device property: PKEY_Device_FriendlyName.";
+		goto Exit;
+	}
+
+	info.name =convertCharPointerToStdString(deviceNameProp.pwszVal);
+
+	// is default
+	if ( isCaptureDevice ) {
+		info.isDefaultInput = info.name == defaultDeviceName;
+		info.isDefaultOutput = false;
+	}
+	else {
+		info.isDefaultInput = false;
+		info.isDefaultOutput = info.name == defaultDeviceName;
+	}
+
+	// channel count
+	hr = devicePtr->Activate( __uuidof( IAudioClient ), CLSCTX_ALL, NULL, ( void** ) &audioClient );
+	if ( FAILED( hr ) ) {
+		errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve device audio client.";
+		goto Exit;
+	}
+
+	hr = audioClient->GetMixFormat( &deviceFormat );
+	if ( FAILED( hr ) ) {
+		errorText_ = "RtApiWasapi::getDeviceInfo: Unable to retrieve device mix format.";
+		goto Exit;
+	}
+
+	if ( isCaptureDevice ) {
+		info.inputChannels = deviceFormat->nChannels;
+		info.outputChannels = 0;
+		info.duplexChannels = 0;
+	}
+	else {
+		info.inputChannels = 0;
+		info.outputChannels = deviceFormat->nChannels;
+		info.duplexChannels = 0;
+	}
+
+	// sample rates
+	info.sampleRates.clear();
+
+	// allow support for all sample rates as we have a built-in sample rate converter
+	for ( unsigned int i = 0; i < MAX_SAMPLE_RATES; i++ ) {
+		info.sampleRates.push_back( SAMPLE_RATES[i] );
+	}
+	info.preferredSampleRate = deviceFormat->nSamplesPerSec;
+
+	// native format
+	info.nativeFormats = 0;
+
+	if ( deviceFormat->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
+		( deviceFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+		( ( WAVEFORMATEXTENSIBLE* ) deviceFormat )->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT ) )
+	{
+		if ( deviceFormat->wBitsPerSample == 32 ) {
+			info.nativeFormats |= RTAUDIO_FLOAT32;
+		}
+		else if ( deviceFormat->wBitsPerSample == 64 ) {
+			info.nativeFormats |= RTAUDIO_FLOAT64;
+		}
+	}
+	else if ( deviceFormat->wFormatTag == WAVE_FORMAT_PCM ||
+		( deviceFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+		( ( WAVEFORMATEXTENSIBLE* ) deviceFormat )->SubFormat == KSDATAFORMAT_SUBTYPE_PCM ) )
+	{
+		if ( deviceFormat->wBitsPerSample == 8 ) {
+			info.nativeFormats |= RTAUDIO_SINT8;
+		}
+		else if ( deviceFormat->wBitsPerSample == 16 ) {
+			info.nativeFormats |= RTAUDIO_SINT16;
+		}
+		else if ( deviceFormat->wBitsPerSample == 24 ) {
+			info.nativeFormats |= RTAUDIO_SINT24;
+		}
+		else if ( deviceFormat->wBitsPerSample == 32 ) {
+			info.nativeFormats |= RTAUDIO_SINT32;
+		}
+	}
+
+	// probed
+	info.probed = true;
+
+Exit:
+	// release all references
+	PropVariantClear( &deviceNameProp );
+	PropVariantClear( &defaultDeviceNameProp );
+
+	SAFE_RELEASE( captureDevices );
+	SAFE_RELEASE( renderDevices );
+	SAFE_RELEASE( devicePtr );
+	SAFE_RELEASE( defaultDevicePtr );
+	SAFE_RELEASE( audioClient );
+	SAFE_RELEASE( devicePropStore );
+	SAFE_RELEASE( defaultDevicePropStore );
+
+	CoTaskMemFree( deviceFormat );
+	CoTaskMemFree( closestMatchFormat );
+
+	if ( !errorText_.empty() )
+		error( errorType );
+	return info;
+}
+
+#endif
 
 //-----------------------------------------------------------------------------
 
@@ -4421,6 +4642,145 @@ void RtApiWasapi::abortStream( void )
 
 //-----------------------------------------------------------------------------
 
+#ifdef USE_WINRT
+bool RtApiWasapi::probeDeviceOpen(unsigned int device, StreamMode mode, unsigned int channels,
+	unsigned int firstChannel, unsigned int sampleRate,
+	RtAudioFormat format, unsigned int* bufferSize,
+	RtAudio::StreamOptions* options)
+{
+	bool methodResult = FAILURE;
+	unsigned int captureDeviceCount = 0;
+	unsigned int renderDeviceCount = 0;
+
+	WAVEFORMATEX* deviceFormat = NULL;
+	unsigned int bufferBytes;
+	stream_.state = STREAM_STOPPED;
+
+	// create API Handle if not already created
+	if (!stream_.apiHandle)
+		stream_.apiHandle = (void*) new WasapiHandle();
+
+	errorText_.clear();
+	RtAudioError::Type errorType = RtAudioError::DRIVER_ERROR;
+
+	bool isCaptureDevice;
+	IAudioClient* audioClient = createAudioClient(device, isCaptureDevice);
+	if (isCaptureDevice) {
+		errorType = RtAudioError::INVALID_USE;
+		errorText_ = "RtApiWasapi::probeDeviceOpen: Cannot instantiate IAudioClient.";
+		goto Exit;
+	}
+
+	// determine whether index falls within capture or render devices
+	if (isCaptureDevice) {
+		if (mode != INPUT) {
+			errorType = RtAudioError::INVALID_USE;
+			errorText_ = "RtApiWasapi::probeDeviceOpen: Capture device selected as output device.";
+			goto Exit;
+		}
+
+		((WasapiHandle*)stream_.apiHandle)->captureAudioClient = audioClient;
+
+		HRESULT hr = audioClient->GetMixFormat(&deviceFormat);
+		if (FAILED(hr)) {
+			errorText_ = "RtApiWasapi::probeDeviceOpen: Unable to retrieve device mix format.";
+			goto Exit;
+		}
+
+		stream_.nDeviceChannels[mode] = deviceFormat->nChannels;
+		audioClient->GetStreamLatency((long long*)&stream_.latency[mode]);
+	}
+	else {
+		if (mode != OUTPUT) {
+			errorType = RtAudioError::INVALID_USE;
+			errorText_ = "RtApiWasapi::probeDeviceOpen: Render device selected as input device.";
+			goto Exit;
+		}
+
+		// retrieve renderAudioClient from devicePtr
+		((WasapiHandle*)stream_.apiHandle)->renderAudioClient = audioClient;
+
+		HRESULT hr = audioClient->GetMixFormat(&deviceFormat);
+		if (FAILED(hr)) {
+			errorText_ = "RtApiWasapi::probeDeviceOpen: Unable to retrieve device mix format.";
+			goto Exit;
+		}
+
+		stream_.nDeviceChannels[mode] = deviceFormat->nChannels;
+		audioClient->GetStreamLatency((long long*)&stream_.latency[mode]);
+	}
+
+	// fill stream data
+	if ((stream_.mode == OUTPUT && mode == INPUT) ||
+		(stream_.mode == INPUT && mode == OUTPUT)) {
+		stream_.mode = DUPLEX;
+	}
+	else {
+		stream_.mode = mode;
+	}
+
+	stream_.device[mode] = device;
+	stream_.doByteSwap[mode] = false;
+	stream_.sampleRate = sampleRate;
+	stream_.bufferSize = *bufferSize;
+	stream_.nBuffers = 1;
+	stream_.nUserChannels[mode] = channels;
+	stream_.channelOffset[mode] = firstChannel;
+	stream_.userFormat = format;
+	stream_.deviceFormat[mode] = getDeviceInfo(device).nativeFormats;
+
+	if (options && options->flags & RTAUDIO_NONINTERLEAVED)
+		stream_.userInterleaved = false;
+	else
+		stream_.userInterleaved = true;
+	stream_.deviceInterleaved[mode] = true;
+
+	// Set flags for buffer conversion.
+	stream_.doConvertBuffer[mode] = false;
+	if (stream_.userFormat != stream_.deviceFormat[mode] ||
+		stream_.nUserChannels != stream_.nDeviceChannels)
+		stream_.doConvertBuffer[mode] = true;
+	else if (stream_.userInterleaved != stream_.deviceInterleaved[mode] &&
+		stream_.nUserChannels[mode] > 1)
+		stream_.doConvertBuffer[mode] = true;
+
+	if (stream_.doConvertBuffer[mode])
+		setConvertInfo(mode, 0);
+
+	// Allocate necessary internal buffers
+	bufferBytes = stream_.nUserChannels[mode] * stream_.bufferSize * formatBytes(stream_.userFormat);
+
+	stream_.userBuffer[mode] = (char*)calloc(bufferBytes, 1);
+	if (!stream_.userBuffer[mode]) {
+		errorType = RtAudioError::MEMORY_ERROR;
+		errorText_ = "RtApiWasapi::probeDeviceOpen: Error allocating user buffer memory.";
+		goto Exit;
+	}
+
+	if (options && options->flags & RTAUDIO_SCHEDULE_REALTIME)
+		stream_.callbackInfo.priority = 15;
+	else
+		stream_.callbackInfo.priority = 0;
+
+	///! TODO: RTAUDIO_MINIMIZE_LATENCY // Provide stream buffers directly to callback
+	///! TODO: RTAUDIO_HOG_DEVICE       // Exclusive mode
+
+	methodResult = SUCCESS;
+
+Exit:
+	//clean up
+	CoTaskMemFree(deviceFormat);
+
+	// if method failed, close the stream
+	if (methodResult == FAILURE)
+		closeStream();
+
+	if (!errorText_.empty())
+		error(errorType);
+	return methodResult;
+}
+#else
+
 bool RtApiWasapi::probeDeviceOpen( unsigned int device, StreamMode mode, unsigned int channels,
                                    unsigned int firstChannel, unsigned int sampleRate,
                                    RtAudioFormat format, unsigned int* bufferSize,
@@ -4614,6 +4974,7 @@ Exit:
     error( errorType );
   return methodResult;
 }
+#endif
 
 //=============================================================================
 
@@ -4646,7 +5007,7 @@ DWORD WINAPI RtApiWasapi::abortWasapiThread( void* wasapiPtr )
 void RtApiWasapi::wasapiThread()
 {
   // as this is a new thread, we must CoInitialize it
-  CoInitialize( NULL );
+  CoInitializeEx( NULL, COINIT_MULTITHREADED);
 
   HRESULT hr;
 
@@ -4684,6 +5045,8 @@ void RtApiWasapi::wasapiThread()
   errorText_.clear();
   RtAudioError::Type errorType = RtAudioError::DRIVER_ERROR;
 
+#ifndef USE_WINRT
+  
   // Attempt to assign "Pro Audio" characteristic to thread
   HMODULE AvrtDll = LoadLibrary( (LPCTSTR) "AVRT.dll" );
   if ( AvrtDll ) {
@@ -4692,6 +5055,7 @@ void RtApiWasapi::wasapiThread()
     AvSetMmThreadCharacteristicsPtr( L"Pro Audio", &taskIndex );
     FreeLibrary( AvrtDll );
   }
+#endif
 
   // start capture stream if applicable
   if ( captureAudioClient ) {
