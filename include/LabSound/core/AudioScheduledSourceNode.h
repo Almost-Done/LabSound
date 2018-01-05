@@ -6,6 +6,7 @@
 #define AudioScheduledSourceNode_h
 
 #include "LabSound/core/AudioSourceNode.h"
+#include <functional>
 
 namespace lab {
 
@@ -49,6 +50,8 @@ public:
     // LabSound: If the node included ScheduledNode in its hierarchy, this will return true.
     // This is to save the cost of a dynamic_cast when scheduling nodes.
     virtual bool isScheduledNode() const override { return true; }
+
+    std::function<void(AudioScheduledSourceNode*)> onFinished;
 
 protected:
 

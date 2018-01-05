@@ -148,6 +148,9 @@ void AudioScheduledSourceNode::finish(ContextRenderLock& r)
 {
     m_playbackState = FINISHED_STATE;
     r.context()->decrementActiveSourceCount();
+
+    if (onFinished)
+        onFinished(this);
 }
 
 } // namespace lab
