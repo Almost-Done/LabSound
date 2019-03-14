@@ -141,8 +141,11 @@ void AudioNodeInput::sumAllConnections(ContextRenderLock& r, AudioBus* summingBu
             // Render audio from this output.
             AudioBus* connectionBus = output->pull(r, 0, framesToProcess);
 
+            // https://github.com/LabSound/LabSound/issues/111
+            // BUG: it seems that the above call can cause the summingBus pointer received to be invalidated by a call to updateInternalBus
+            // BUG: grabing a fresh pointer to the internal summing bus seems to fix it?
             // Sum, with unity-gain.
-            summingBus->sumFrom(*connectionBus);
+            internalSummingBus(r)->sumFrom(*connectionBus);
         }
     }
 }

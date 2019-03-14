@@ -92,7 +92,8 @@ void AudioDestinationWin::configure()
 
     try
     {
-        dac.openStream(&outputParams, &inputParams, RTAUDIO_FLOAT32, (unsigned int) m_sampleRate, &bufferFrames, &outputCallback, this, &options);
+        // https://github.com/LabSound/LabSound/issues/110
+        dac.openStream(&outputParams, nullptr /*&inputParams*/, RTAUDIO_FLOAT32, (unsigned int) m_sampleRate, &bufferFrames, &outputCallback, this, &options);
     }
     catch (RtAudioError & e)
     {
@@ -145,7 +146,8 @@ void AudioDestinationWin::render(int numberOfFrames, void * outputBuffer, void *
     }
 
     // Source Bus :: Destination Bus
-    m_callback.render(&m_inputBus, &m_renderBus, numberOfFrames);
+    // https://github.com/LabSound/LabSound/issues/110
+    m_callback.render(nullptr /*&m_inputBus*/, &m_renderBus, numberOfFrames);
 
     // Clamp values at 0db (i.e., [-1.0, 1.0])
     for (unsigned i = 0; i < m_renderBus.numberOfChannels(); ++i)
