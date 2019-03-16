@@ -53,6 +53,7 @@ public:
 
     std::shared_ptr<AudioParam> gain() { return m_gain; }
     std::shared_ptr<AudioParam> playbackRate() { return m_playbackRate; }
+    std::shared_ptr<AudioParam> detune() { return m_detune; }
 
     // If a panner node is set, then we can incorporate doppler shift into the playback pitch rate.
     void setPannerNode(PannerNode*);
@@ -78,6 +79,7 @@ private:
     // Used for the "gain" and "playbackRate" attributes.
     std::shared_ptr<AudioParam> m_gain;
     std::shared_ptr<AudioParam> m_playbackRate;
+    std::shared_ptr<AudioParam> m_detune;
 
     // If m_isLooping is false, then this node will be done playing and become inactive after it reaches the end of the sample data in the buffer.
     // If true, it will wrap around to the start of the buffer each time it reaches the end.

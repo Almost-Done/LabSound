@@ -33,6 +33,7 @@ SampledAudioNode::SampledAudioNode() : AudioScheduledSourceNode(), m_grainDurati
 {
     m_gain = make_shared<AudioParam>("gain", 1.0, 0.0, 1.0);
     m_playbackRate = make_shared<AudioParam>("playbackRate", 1.0, 0.0, MaxRate);
+    m_detune = make_shared<AudioParam>("detune", 0.0, -1.e6f, 1.e6f);
 
     m_params.push_back(m_gain);
     m_params.push_back(m_playbackRate);
@@ -392,6 +393,7 @@ double SampledAudioNode::totalPitchRate(ContextRenderLock & r)
     double basePitchRate = playbackRate()->value(r);
 
     double totalRate = dopplerRate * sampleRateFactor * basePitchRate;
+    totalRate *= pow(2, detune()->value(r) / 1200);
 
     // Sanity check the total rate.  It's very important that the resampler not get any bad rate values.
     totalRate = std::max(0.0, totalRate);
