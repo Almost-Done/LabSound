@@ -4,11 +4,11 @@
 
 macOS | Windows | Linux |
 -------- | ------------ | -------
-[![Build Status](https://travis-ci.org/LabSound/LabSound.svg)](https://travis-ci.org/LabSound/LabSound) | [![Build status](https://ci.appveyor.com/api/projects/status/k6n5ib48t7q8wwlc?svg=true)](https://ci.appveyor.com/project/ddiakopoulos/labsound) |
+[![Build Status](https://travis-ci.org/LabSound/LabSound.svg)](https://travis-ci.org/LabSound/LabSound) | [![Build status](https://ci.appveyor.com/api/projects/status/k6n5ib48t7q8wwlc?svg=true)](https://ci.appveyor.com/project/ddiakopoulos/labsound) | [![Build Status](https://travis-ci.org/LabSound/LabSound.svg)](https://travis-ci.org/LabSound/LabSound)
 -----------------
 
 
-LabSound is a graph-based audio engine built using C++11. LabSound originated as a fork of WebKit's WebAudio implementation, as used in Google's Chrome browser and Apple's Safari. 
+LabSound is a C++ graph-based audio engine. LabSound originated as a fork of WebKit's WebAudio implementation, as used in Google's Chrome and Apple's Safari. 
 
 LabSound implements many aspects of the WebAudio specification while extending its functionality with an improved API, new graph nodes, bugfixes, and performance improvements.
 
@@ -21,19 +21,17 @@ The engine is packaged as a batteries-included static library meant for integrat
 * Compatibility with the [WebAudio API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API)
 * Audio asset loading via [libnyquist](https://github.com/ddiakopoulos/libnyquist)
 * Binaural audio via IRCAM HRTF database
-* New audio effects and generators (ADSR, noise, stereo delay, and more)
-* Signal analysis (both time & frequency)
-* Offline graph processing & wav export
-* High-quality realtime signal resampling
-* Thread safety guarantees for multi-threaded apps (e.g. gui)
-* Extensible base nodes for arbitrary DSP processing
-* Microphone input
-* SIMD accelerated channel mixing routines
-* DSP primitives including filters and delays
+* Additional effect & generator nodes (ADSR, noise, stereo delay, and more)
+* Compile-time arbitrary function node for DSP processing
+* Basic signal analysis nodes (time & frequency)
+* Input node (microphone)
+* Non-realtime graph processing & wav export
+* Thread safety model for multi-threaded apps (e.g. gui)
+* SIMD-accelerated channel mixing routines
 
 # Platforms
 
-LabSound has a variety of backends, including RtAudio and CoreAudio.
+LabSound supports a variety of backends, including RtAudio and CoreAudio.
 
 LabSound is currently tested on
 
@@ -41,11 +39,7 @@ LabSound is currently tested on
 * macOS 10.10 to current
 * Ubuntu 18.04, using the ALSA and Pulse back ends.
 
-LabSound has been shown to run on
-
-* iOS
-* Android
-* macOS and Linux Jack
+In the past, LabSound has been demonstrated to work on iOS, Android, and Linux via JACK. 
 
 # Building
 
@@ -53,13 +47,11 @@ Users of LabSound are expected to compile LabSound from source. While most depen
 
 The submodules can be fetched after a clone with `git submodule update --init --recursive`
 
-LabSound and libnyquist require a C++11 compiler.
+LabSound and libnyquist require a C++14 or greater compiler.
 
 # Building with Cmake
 
-CMake can be used as an alternative to the vcproj and xcodeproj files bundled with the LabSound source distribution.
-
-LabSound has a `CMakeLists.txt` at the root directory, and all the associated CMake files are in the `cmake/` subfolder. A CMake based build will work out of the box on Windows, it is not yet tested on other platforms. If you use the CMake build, it will build everything to a folder named `../local/` build directory. As always with CMake, it is recommended that you do an out-of-source build.
+LabSound has a `CMakeLists.txt` at the root directory, and all the associated CMake files are in the `cmake/` subfolder. If you use the CMake build, it will build everything to a folder named `../local/` build directory. As always with CMake, it is recommended that you do an out-of-source build.
 
 On Linux, a backend must be selected, using one of ALSA, Pulse, or Jack. To build with ALSA:
 
@@ -70,7 +62,7 @@ cmake --build . --target INSTALL --config Release
 
 # Examples
 
-LabSound is bundled with approximately 20 single-file samples. Project files can be found in the `examples/` subfolder.
+LabSound is bundled with many samples. Project files can be found in the `examples/` subfolder.
 
 # Using the Library
 
@@ -97,6 +89,12 @@ LabSound includes an HRTF implementation. This creates an additional dependency 
 # WebAudio Compatibility
 
 LabSound is derived from one of the original WebAudio implementations, but does not maintain full compatibility with the [spec](http://www.w3.org/TR/webaudio/). In many cases, LabSound has deliberately deviated from the spec for performance or API usability reasons. This is expected to continue into the future as new functionality is added to the engine. It possible to reformulate most WebAudio API sample code written in JS as a LabSound sketch (modulo obvious architectual considerations of JavaScript vs C++).
+
+# Release Notes
+
+March 2019: AudioParams already exist for rate varying values on Audio Nodes. AudioParams are registered on nodes by name, and can be looked up by name. Non-rate varying parameters such as filter modes, buffer sizes, and so on could not be similarly looked up by name. AudioSettings are introduced in this release for non-rate varying parameters, such as filter modes, buffer sizes and so on. Settings for each AudioNode are documented in its corresponding header file. A vector of param or setting names can be fetched from an AudioNode and used to populate a user interface. Each fetched AudioSetting can be queried as to whether its last set type was a Uint32 or a Float, in order that user interfaces can self configure appropriately.
+
+Added some nullchecks to AudioChannel memory management as pointed out by harmonicvision
 
 # License
 
