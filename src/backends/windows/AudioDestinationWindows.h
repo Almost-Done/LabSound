@@ -13,6 +13,7 @@
 #include "rtaudio/RtAudio.h"
 #include <iostream>
 #include <cstdlib>
+#include <memory>
 
 namespace lab {
 
@@ -38,7 +39,7 @@ private:
     AudioIOCallback & m_callback;
 
     AudioBus m_renderBus = {2, AudioNode::ProcessingSizeInFrames, false};
-    AudioBus m_inputBus = {1, AudioNode::ProcessingSizeInFrames, false};
+    std::unique_ptr<AudioBus> m_inputBus;
 
     size_t m_numChannels;
     float m_sampleRate;
